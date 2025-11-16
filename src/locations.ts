@@ -300,7 +300,8 @@ export function formatVillageList(kecamatanName: string): string {
 export function getKecamatanByNumber(num: number): LocationData | null {
   const index = num - 1
   if (index < 0 || index >= locations.length) return null
-  return locations[index]
+  const item = locations[index]
+  return item ?? null
 }
 
 // Helper function to get village by number for a kecamatan
@@ -308,6 +309,7 @@ export function getVillageByNumber(kecamatanName: string, num: number): string |
   const villages = getVillagesForKecamatan(kecamatanName)
   const index = num - 1
   if (index < 0 || index >= villages.length) return null
-  return villages[index]
+  const name = villages[index]
+  return name ?? null
 }
 
