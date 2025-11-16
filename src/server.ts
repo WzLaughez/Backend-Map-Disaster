@@ -24,6 +24,8 @@ app.get('/api/reports.geojson', async (_req, res) => {
       take: 1000,
       select: {
         id: true,
+        name: true,
+        reporterWa: true,
         disasterType: true,
         description: true,
         address: true,
@@ -44,6 +46,8 @@ app.get('/api/reports.geojson', async (_req, res) => {
       },
       properties: {
         id: r.id,
+        name: r.name,
+        reporterWa: r.reporterWa,
         type: r.disasterType,
         desc: r.description,
         address: r.address,
@@ -73,7 +77,7 @@ app.get('/api/reports', async (req, res) => {
         where: { NOT: { status: 'invalid' } },
         orderBy: { createdAt: 'desc' },
         skip, take: size,
-        select: { id:true, disasterType:true, address:true, description:true, severity:true, happenedAt:true, createdAt:true, lat:true, lon:true, kecamatan:true, desa:true }
+        select: { id:true, name:true, reporterWa:true, disasterType:true, address:true, description:true, severity:true, happenedAt:true, createdAt:true, lat:true, lon:true, kecamatan:true, desa:true }
       }),
       prisma.report.count({ where: { NOT: { status: 'invalid' } } })
     ])

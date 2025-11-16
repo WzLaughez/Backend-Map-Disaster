@@ -44,9 +44,27 @@ function normalizeType(s:string) {
   if (t.includes('banjir')) return 'banjir'
   if (t.includes('kebakar')) return 'kebakaran'
   if (t.includes('longsor')) return 'longsor'
-  if (t.includes('angin')) return 'angin'
+  if (t.includes('angin kencang')) return 'angin kencang'
   if (t.includes('gempa')) return 'gempa'
   return 'lainnya'
+}
+
+// Pilihan jenis bencana (untuk input nomor)
+const DISASTER_TYPES = ['banjir','kebakaran','longsor','angin kencang','gempa','lainnya'] as const
+type DisasterType = typeof DISASTER_TYPES[number]
+function formatDisasterTypeList(): string {
+  return DISASTER_TYPES.map((t, i) => `${i+1}. ${t}`).join('\n')
+}
+function normalizeTypeFromNumberOrText(input: string): DisasterType {
+  const txt = (input || '').trim().toLowerCase()
+  // numeric?
+  const num = parseInt(txt, 10)
+  if (!isNaN(num) && num >= 1 && num <= DISASTER_TYPES.length) {
+    return DISASTER_TYPES[num - 1] as DisasterType
+  }
+  // fallback text normalization
+  const n = normalizeType(txt)
+  return (DISASTER_TYPES as readonly string[]).includes(n) ? (n as DisasterType) : 'lainnya' as DisasterType
 }
 
 // Global error handlers to prevent crashes
@@ -60,6 +78,127 @@ process.on('uncaughtException', (error) => {
   // Log but don't exit for critical errors
   // In production, you might want to exit and let a process manager restart
 })
+
+// ====== Waktu: parser sederhana untuk berbagai format umum ======
+function parseIndonesianDate(textRaw: string): Date | null {
+  const text = (textRaw || '').trim().toLowerCase()
+  const now = new Date()
+  if (!text) return null
+  if (text === 'sekarang') return now
+  if (text === 'hari ini') return now
+  if (text.startsWith('kemarin')) {
+    const base = new Date(now)
+    base.setDate(base.getDate() - 1)
+    // extract time if provided e.g. "kemarin 14:30" or "kemarin jam 14:30"
+    const m = text.match(/(\d{1,2})[:.](\d{2})/)
+    if (m) {
+      const [, hhStr, mmStr] = m
+      const hh = parseInt(hhStr || '0', 10)
+      const mm = parseInt(mmStr || '0', 10)
+      base.setHours(isFinite(hh) ? hh : 0, isFinite(mm) ? mm : 0, 0, 0)
+    } else {
+      base.setHours(12, 0, 0, 0) // tengah hari default
+    }
+    return base
+  }
+  // Only time -> assume today, "14:30" or "07.15"
+  let m = text.match(/^(\d{1,2})[:.](\d{2})$/)
+  if (m) {
+    const [, hhStr, mmStr] = m
+    const hh = parseInt(hhStr || '0', 10)
+    const mm = parseInt(mmStr || '0', 10)
+    if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+      const d = new Date(now)
+      d.setHours(hh, mm, 0, 0)
+      return d
+    }
+  }
+  // Prefix "jam 14:30"
+  m = text.match(/^jam\s+(\d{1,2})[:.](\d{2})$/)
+  if (m) {
+    const [, hhStr, mmStr] = m
+    const hh = parseInt(hhStr || '0', 10)
+    const mm = parseInt(mmStr || '0', 10)
+    const d = new Date(now)
+    d.setHours(hh, mm, 0, 0)
+    return d
+  }
+  // DD/MM/YYYY [HH:mm]
+  m = text.match(/^(\d{1,2})[\/](\d{1,2})[\/](\d{4})(?:\s+(\d{1,2})[:.](\d{2}))?$/)
+  if (m) {
+    const [, ddStr, mmStr, yyyyStr, hhStr, minStr] = m
+    const dd = parseInt(ddStr || '1', 10)
+    const MM = parseInt(mmStr || '1', 10)
+    const yyyy = parseInt(yyyyStr || String(now.getFullYear()), 10)
+    const hh = hhStr ? parseInt(hhStr, 10) : 12
+    const mm2 = minStr ? parseInt(minStr, 10) : 0
+    const d = new Date(yyyy, MM - 1, dd, hh, mm2, 0, 0)
+    return isNaN(d.getTime()) ? null : d
+  }
+  // DD-MM-YYYY [HH:mm]
+  m = text.match(/^(\d{1,2})-(\d{1,2})-(\d{4})(?:\s+(\d{1,2})[:.](\d{2}))?$/)
+  if (m) {
+    const [, ddStr, mmStr, yyyyStr, hhStr, minStr] = m
+    const dd = parseInt(ddStr || '1', 10)
+    const MM = parseInt(mmStr || '1', 10)
+    const yyyy = parseInt(yyyyStr || String(now.getFullYear()), 10)
+    const hh = hhStr ? parseInt(hhStr, 10) : 12
+    const mm2 = minStr ? parseInt(minStr, 10) : 0
+    const d = new Date(yyyy, MM - 1, dd, hh, mm2, 0, 0)
+    return isNaN(d.getTime()) ? null : d
+  }
+  // YYYY-MM-DD [HH:mm]
+  m = text.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(\d{1,2})[:.](\d{2}))?$/)
+  if (m) {
+    const [, yyyyStr, mmStr, ddStr, hhStr, minStr] = m
+    const yyyy = parseInt(yyyyStr || String(now.getFullYear()), 10)
+    const MM = parseInt(mmStr || '1', 10)
+    const dd = parseInt(ddStr || '1', 10)
+    const hh = hhStr ? parseInt(hhStr, 10) : 12
+    const mm2 = minStr ? parseInt(minStr, 10) : 0
+    const d = new Date(yyyy, MM - 1, dd, hh, mm2, 0, 0)
+    return isNaN(d.getTime()) ? null : d
+  }
+  // 12 Nov 2025 [14:30] (bulan Indonesia)
+  const bulan: Record<string, number> = {
+    'jan': 1, 'januari': 1,
+    'feb': 2, 'februari': 2,
+    'mar': 3, 'maret': 3,
+    'apr': 4, 'april': 4,
+    'mei': 5,
+    'jun': 6, 'juni': 6,
+    'jul': 7, 'juli': 7,
+    'agu': 8, 'agustus': 8,
+    'sep': 9, 'september': 9,
+    'okt': 10, 'oktober': 10,
+    'nov': 11, 'november': 11,
+    'des': 12, 'desember': 12
+  }
+  m = text.match(/^(\d{1,2})\s+([a-zA-Z]+)\s+(\d{4})(?:\s+(\d{1,2})[:.](\d{2}))?$/)
+  if (m) {
+    const [, ddStr, monthStr, yyyyStr, hhStr, minStr] = m
+    const dd = parseInt(ddStr || '1', 10)
+    const monKey = (monthStr || '').toLowerCase()
+    const MM = bulan[monKey]
+    const yyyy = parseInt(yyyyStr || String(now.getFullYear()), 10)
+    const hh = hhStr ? parseInt(hhStr, 10) : 12
+    const mm2 = minStr ? parseInt(minStr, 10) : 0
+    if (MM) {
+      const d = new Date(yyyy, MM - 1, dd, hh, mm2, 0, 0)
+      return isNaN(d.getTime()) ? null : d
+    }
+  }
+  // Fallback native Date (last resort)
+  const tryNative = new Date(textRaw)
+  if (!isNaN(tryNative.getTime())) return tryNative
+  return null
+}
+
+function timePromptText(): string {
+  return 'Kapan kejadiannya? Balas:\n' +
+    '• SEKARANG\n' +
+    'atau tulis tanggal dan jam seperti: 12 Nov 2025 14:30\n' 
+}
 
 // ===== QR streaming support for frontend =====
 export const qrEvents = new EventEmitter()
@@ -148,6 +287,18 @@ async function start() {
       // Get active form or start new one
       let form = activeForms.get(jid)
       
+      // Global reset: "ULANGI" to restart from beginning at any step
+      if (/^ulangi$/i.test(txt)) {
+        const fresh: ReportForm = {
+          reporterWa: jid,
+          nextStep: 'name',
+          updatedAt: Date.now()
+        }
+        activeForms.set(jid, fresh)
+        await sock.sendMessage(jid, { text: 'Baik, kita mulai ulang.\nSiapa nama Anda sebagai pelapor?' })
+        return
+      }
+      
       if (!form && /^(lapor|bencana)$/i.test(txt)) {
         form = {
           reporterWa: jid,
@@ -172,12 +323,12 @@ async function start() {
         }
         form.name = txt.trim()
         form.nextStep = 'type'
-        await sock.sendMessage(jid, { text:'Jenis bencana? (Banjir/Kebakaran/Longsor/Angin Kencang/Gempa/Lainnya)' })
+        await sock.sendMessage(jid, { text: 'Jenis bencana?\n' + formatDisasterTypeList() + '\n\nKetik nomor (1-6) atau tulis jenis.' })
         break
       }
 
       case 'type': {
-        form.disasterType = normalizeType(txt)
+        form.disasterType = normalizeTypeFromNumberOrText(txt)
         form.nextStep = 'location'
         await sock.sendMessage(jid, { text:'Kirim *Lokasi* via Share Location (WA) atau ketik alamat lengkap.' })
         break
@@ -252,7 +403,7 @@ async function start() {
       case 'kecamatan': {
         if (/^lewati$/i.test(txt)) {
           form.nextStep = 'time'
-          await sock.sendMessage(jid, { text: 'Kapan kejadiannya? ("SEKARANG" atau tulis tanggal/jam)' })
+          await sock.sendMessage(jid, { text: timePromptText() })
           break
         }
         
@@ -279,13 +430,13 @@ async function start() {
       case 'desa': {
         if (/^lewati$/i.test(txt)) {
           form.nextStep = 'time'
-          await sock.sendMessage(jid, { text: 'Kapan kejadiannya? ("SEKARANG" atau tulis tanggal/jam)' })
+          await sock.sendMessage(jid, { text: timePromptText() })
           break
         }
         
         if (!form.kecamatan) {
           form.nextStep = 'time'
-          await sock.sendMessage(jid, { text: 'Kapan kejadiannya? ("SEKARANG" atau tulis tanggal/jam)' })
+          await sock.sendMessage(jid, { text: timePromptText() })
           break
         }
         
@@ -303,12 +454,17 @@ async function start() {
         
         form.desa = selectedDesa
         form.nextStep = 'time'
-        await sock.sendMessage(jid, { text: `Desa/Kelurahan: ${selectedDesa}\n\nKapan kejadiannya? ("SEKARANG" atau tulis tanggal/jam)` })
+        await sock.sendMessage(jid, { text: `Desa/Kelurahan: ${selectedDesa}\n\nKapan kejadiannya? ${timePromptText()}` })
         break
       }
 
       case 'time': {
-        form.happenedAt = /^sekarang$/i.test(txt) ? new Date() : (txt ? new Date(txt) : new Date())
+        const parsed = parseIndonesianDate(txt)
+        if (!parsed) {
+          await sock.sendMessage(jid, { text: 'Format waktu tidak dikenali. Contoh:\n' + timePromptText() })
+          break
+        }
+        form.happenedAt = parsed
         form.nextStep = 'desc'
         await sock.sendMessage(jid, { text:'Deskripsi singkat (≤ 500 karakter):' })
         break
@@ -333,7 +489,7 @@ async function start() {
         const kecamatanInfo = form.kecamatan || '-'
         const desaInfo = form.desa || '-'
         await sock.sendMessage(jid, { text:
-          `Cek ringkasan:\n• Nama: ${form.name || '-'}\n• Jenis: ${form.disasterType}\n• Alamat: ${locationInfo}\n• Kecamatan: ${kecamatanInfo}\n• Desa/Kelurahan: ${desaInfo}\n• Waktu: ${form.happenedAt || 'sekarang'}\n• Deskripsi: ${form.description}\n• Severity: ${form.severity || '-'}\n\nBalas KIRIM untuk kirim, atau UBAH {bagian}.`
+          `Cek ringkasan:\n• Nama: ${form.name || '-'}\n• Jenis: ${form.disasterType}\n• Alamat: ${locationInfo}\n• Kecamatan: ${kecamatanInfo}\n• Desa/Kelurahan: ${desaInfo}\n• Waktu: ${form.happenedAt || 'sekarang'}\n• Deskripsi: ${form.description}\n• Severity: ${form.severity || '-'}\n\nBalas KIRIM untuk kirim atau ULANGI untuk memulai ulang.`
         })
         break
 
@@ -387,7 +543,7 @@ async function start() {
           await sock.sendMessage(jid, { text:'Tulis bagian yang ingin diubah: JENIS/LOKASI/WAKTU/DESKRIPSI/SEVERITY' })
           // (Sederhana: tidak implement UBAH detail di MVP)
         } else {
-          await sock.sendMessage(jid, { text:'Balas KIRIM untuk mengirim, atau UBAH {bagian}.' })
+          await sock.sendMessage(jid, { text:'Balas KIRIM untuk mengirim. Atau ULANGI untuk memulai ulang.' })
         }
         break
     }
