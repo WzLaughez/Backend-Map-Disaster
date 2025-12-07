@@ -15,8 +15,6 @@ model Report {
   name         String?   // Nama pelapor
   disasterType String
   description  String?
-  severity     String?
-  happenedAt   DateTime?
   address      String?
   lat          Float     @default(0)
   lon          Float     @default(0)
@@ -24,7 +22,7 @@ model Report {
   desa         String?   // Desa/Kelurahan
   mediaUrls    Json      @default("[]") // MySQL: JSON array
   status       String    @default("draft") // draft|new|verified|invalid|resolved
-  nextStep     String? // type|location|kecamatan|desa|time|desc|severity|media|confirm
+  nextStep     String? // type|location|kecamatan|desa|desc|media|confirm
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 }

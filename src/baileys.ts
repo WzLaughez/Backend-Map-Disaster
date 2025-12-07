@@ -5,6 +5,8 @@ import qrcode from 'qrcode-terminal'
 import { EventEmitter } from 'events'
 import { promises as fs } from 'fs'
 import { formatKecamatanList, formatVillageList, getKecamatanByNumber, getVillageByNumber } from './locations'
+import { isImageMessage, downloadImageFromMessage, saveImage } from './media'
+import { randomUUID } from 'crypto'
 
 // In-memory form storage (JID -> FormData)
 interface ReportForm {
@@ -12,8 +14,6 @@ interface ReportForm {
   name?: string
   disasterType?: string
   description?: string
-  severity?: string
-  happenedAt?: Date
   address?: string
   lat?: number
   lon?: number
@@ -24,7 +24,9 @@ interface ReportForm {
   liveExpiresAt?: Date | null
   waMessageId?: string
   waTimestamp?: Date
-  nextStep: 'name' | 'type' | 'location' | 'kecamatan' | 'desa' | 'time' | 'desc' | 'severity' | 'confirm'
+  mediaUrl?: string // Temporary storage for uploaded image URL
+  reportId?: string // Pre-generated report ID for media storage
+  nextStep: 'name' | 'type' | 'location' | 'kecamatan' | 'desa' | 'desc' | 'media' | 'confirm'
   updatedAt: number // ms, untuk TTL
 }
 
@@ -315,6 +317,64 @@ async function start() {
         return
       }
 
+      // Check for media messages (images) - handle during media step only
+      if (isImageMessage(m.message!)) {
+        // Only accept media during media step
+        if (form.nextStep === 'media') {
+          // If already has an image, replace it
+          if (form.mediaUrl) {
+            await sock.sendMessage(jid, { 
+              text: 'Anda sudah mengirim foto. Foto baru akan menggantikan foto sebelumnya.' 
+            })
+          }
+
+          try {
+            // Download image
+            const mediaInfo = await downloadImageFromMessage(sock, m)
+            
+            if (!mediaInfo) {
+              await sock.sendMessage(jid, { text: 'Gagal mengunduh gambar. Coba kirim ulang atau ketik LEWATI untuk melanjutkan.' })
+              return
+            }
+
+            // Generate report ID if not exists
+            if (!form.reportId) {
+              form.reportId = randomUUID()
+            }
+
+            // Save image to storage
+            const mediaUrl = await saveImage(mediaInfo.buffer, mediaInfo.filename, form.reportId)
+            form.mediaUrl = mediaUrl
+
+            await sock.sendMessage(jid, { 
+              text: '✅ Foto berhasil diterima!\n\nKetik SELESAI untuk melanjutkan ke konfirmasi.' 
+            })
+            return
+          } catch (error: any) {
+            console.error('Error handling media:', error)
+            
+            // More user-friendly error messages
+            let errorMsg = 'Gagal memproses gambar'
+            if (error.message?.includes('expired') || error.message?.includes('URL tidak tersedia')) {
+              errorMsg = 'Media sudah expired atau tidak tersedia. Silakan kirim ulang foto yang baru.'
+            } else if (error.message?.includes('terlalu besar') || error.message?.includes('too large')) {
+              errorMsg = 'Foto terlalu besar. Maksimal 10MB.'
+            } else if (error.message) {
+              errorMsg = error.message
+            }
+            
+            await sock.sendMessage(jid, { 
+              text: `❌ ${errorMsg}\n\nCoba kirim ulang foto atau ketik LEWATI untuk melanjutkan tanpa foto.` 
+            })
+            return
+          }
+        } else if (form.nextStep !== 'confirm') {
+          // Media sent outside media step - ignore or inform
+          await sock.sendMessage(jid, { text: 'Mohon ikuti langkah-langkah. Jika ingin mengirim foto, tunggu sampai diminta.' })
+          return
+        }
+      }
+
     switch (form.nextStep) {
       case 'name': {
         if (!txt || txt.trim().length === 0) {
@@ -402,8 +462,8 @@ async function start() {
 
       case 'kecamatan': {
         if (/^lewati$/i.test(txt)) {
-          form.nextStep = 'time'
-          await sock.sendMessage(jid, { text: timePromptText() })
+          form.nextStep = 'desc'
+          await sock.sendMessage(jid, { text:'Deskripsi singkat (≤ 500 karakter):' })
           break
         }
         
@@ -429,14 +489,14 @@ async function start() {
 
       case 'desa': {
         if (/^lewati$/i.test(txt)) {
-          form.nextStep = 'time'
-          await sock.sendMessage(jid, { text: timePromptText() })
+          form.nextStep = 'desc'
+          await sock.sendMessage(jid, { text:'Deskripsi singkat (≤ 500 karakter):' })
           break
         }
         
         if (!form.kecamatan) {
-          form.nextStep = 'time'
-          await sock.sendMessage(jid, { text: timePromptText() })
+          form.nextStep = 'desc'
+          await sock.sendMessage(jid, { text:'Deskripsi singkat (≤ 500 karakter):' })
           break
         }
         
@@ -453,20 +513,8 @@ async function start() {
         }
         
         form.desa = selectedDesa
-        form.nextStep = 'time'
-        await sock.sendMessage(jid, { text: `Desa/Kelurahan: ${selectedDesa}\n\nKapan kejadiannya? ${timePromptText()}` })
-        break
-      }
-
-      case 'time': {
-        const parsed = parseIndonesianDate(txt)
-        if (!parsed) {
-          await sock.sendMessage(jid, { text: 'Format waktu tidak dikenali. Contoh:\n' + timePromptText() })
-          break
-        }
-        form.happenedAt = parsed
         form.nextStep = 'desc'
-        await sock.sendMessage(jid, { text:'Deskripsi singkat (≤ 500 karakter):' })
+        await sock.sendMessage(jid, { text: `Desa/Kelurahan: ${selectedDesa}\n\nDeskripsi singkat (≤ 500 karakter):` })
         break
       }
 
@@ -476,43 +524,69 @@ async function start() {
           break
         }
         form.description = txt.slice(0, 500)
-        form.nextStep = 'severity'
-        await sock.sendMessage(jid, { text:'Keparahan? (Rendah/Sedang/Tinggi) atau balas "LEWATI"' })
+        form.nextStep = 'media'
+        // Generate report ID for media storage
+        if (!form.reportId) {
+          form.reportId = randomUUID()
+        }
+        await sock.sendMessage(jid, { 
+          text: 'Kirim 1 foto dokumentasi (opsional).\n\nBalas dengan foto atau ketik LEWATI untuk melanjutkan tanpa foto.' 
+        })
         break
 
-      case 'severity':
-        if (!/^lewati$/i.test(txt) && txt) {
-          form.severity = txt
+      case 'media':
+        if (/^lewati$/i.test(txt) || /^selesai$/i.test(txt)) {
+          // Skip media or proceed with existing image, go to confirm
+          form.nextStep = 'confirm'
+          const locationInfo = form.address || (form.lat && form.lon ? `${form.lat},${form.lon}` : '-')
+          const kecamatanInfo = form.kecamatan || '-'
+          const desaInfo = form.desa || '-'
+          const mediaInfo = form.mediaUrl ? '✅ Ada foto' : '❌ Tidak ada foto'
+          await sock.sendMessage(jid, { text:
+            `Cek ringkasan:\n• Nama: ${form.name || '-'}\n• Jenis: ${form.disasterType}\n• Alamat: ${locationInfo}\n• Kecamatan: ${kecamatanInfo}\n• Desa/Kelurahan: ${desaInfo}\n• Deskripsi: ${form.description}\n• Foto: ${mediaInfo}\n\nBalas KIRIM untuk kirim atau ULANGI untuk memulai ulang.`
+          })
+        } else if (form.mediaUrl) {
+          // Already have media, just wait for SELESAI
+          await sock.sendMessage(jid, { 
+            text: 'Foto sudah diterima. Ketik SELESAI untuk melanjutkan ke konfirmasi, atau kirim foto baru untuk mengganti.' 
+          })
+        } else {
+          // Waiting for media
+          await sock.sendMessage(jid, { 
+            text: 'Kirim foto (1 foto saja) atau ketik LEWATI/SELESAI untuk melanjutkan tanpa foto.' 
+          })
         }
-        form.nextStep = 'confirm'
-        const locationInfo = form.address || (form.lat && form.lon ? `${form.lat},${form.lon}` : '-')
-        const kecamatanInfo = form.kecamatan || '-'
-        const desaInfo = form.desa || '-'
-        await sock.sendMessage(jid, { text:
-          `Cek ringkasan:\n• Nama: ${form.name || '-'}\n• Jenis: ${form.disasterType}\n• Alamat: ${locationInfo}\n• Kecamatan: ${kecamatanInfo}\n• Desa/Kelurahan: ${desaInfo}\n• Waktu: ${form.happenedAt || 'sekarang'}\n• Deskripsi: ${form.description}\n• Severity: ${form.severity || '-'}\n\nBalas KIRIM untuk kirim atau ULANGI untuk memulai ulang.`
-        })
         break
 
       case 'confirm':
         if (/^kirim$/i.test(txt)) {
           // Create report in database only when confirmed (simple lat/lon, no PostGIS)
           try {
+            // Prepare media URLs array - ensure it's a proper array
+            const mediaUrls: string[] = form.mediaUrl ? [form.mediaUrl] : []
+            
+            // Prepare report data
+            const reportData: any = {
+              reporterWa: form.reporterWa,
+              name: form.name || null,
+              disasterType: form.disasterType || 'lainnya',
+              description: form.description || null,
+              address: form.address || null,
+              lat: form.lat || 0,
+              lon: form.lon || 0,
+              kecamatan: form.kecamatan || null,
+              desa: form.desa || null,
+              mediaUrls: mediaUrls, // Prisma Json type will serialize this correctly
+              status: 'new'
+            }
+            
+            // Only include id if reportId exists
+            if (form.reportId) {
+              reportData.id = form.reportId
+            }
+            
             const report = await prisma.report.create({
-              data: {
-                reporterWa: form.reporterWa,
-                name: form.name || null,
-                disasterType: form.disasterType || 'lainnya',
-                description: form.description || null,
-                severity: form.severity || null,
-                happenedAt: form.happenedAt || new Date(),
-                address: form.address || null,
-                lat: form.lat || 0,
-                lon: form.lon || 0,
-                kecamatan: form.kecamatan || null,
-                desa: form.desa || null,
-                mediaUrls: [],
-                status: 'new'
-              }
+              data: reportData
             })
             
             await sock.sendMessage(jid, { text:`Terima kasih. ID: ${report.id}\nPeta: https://map.domain.id/report/${report.id}` })
@@ -540,7 +614,7 @@ async function start() {
             }
           }
         } else if (/^ubah/i.test(txt)) {
-          await sock.sendMessage(jid, { text:'Tulis bagian yang ingin diubah: JENIS/LOKASI/WAKTU/DESKRIPSI/SEVERITY' })
+          await sock.sendMessage(jid, { text:'Tulis bagian yang ingin diubah: JENIS/LOKASI/DESKRIPSI' })
           // (Sederhana: tidak implement UBAH detail di MVP)
         } else {
           await sock.sendMessage(jid, { text:'Balas KIRIM untuk mengirim. Atau ULANGI untuk memulai ulang.' })
