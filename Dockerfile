@@ -64,4 +64,4 @@ ENTRYPOINT ["dumb-init", "--"]
 
 # Jalankan migrasi lalu start server
 # DATABASE_URL diisi via environment variable saat runtime
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/server.js"]
+CMD ["sh", "-c", "npx prisma db push && node dist/src/server.js"]
